@@ -1,0 +1,24 @@
+# Build binary
+dbscope
+
+# Test data
+testdata/
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI
+.claude
+AGENTS.md
+
+TODO.md

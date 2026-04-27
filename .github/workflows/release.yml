@@ -48,20 +48,10 @@ jobs:
             -o "${OUT}" .
           echo "ARTIFACT=${OUT}" >> "$GITHUB_ENV"
 
-      - name: Package
-        run: |
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip "${ARTIFACT%.exe}.zip" "${ARTIFACT}"
-            echo "ASSET=${ARTIFACT%.exe}.zip" >> "$GITHUB_ENV"
-          else
-            tar -czf "${ARTIFACT}.tar.gz" "${ARTIFACT}"
-            echo "ASSET=${ARTIFACT}.tar.gz" >> "$GITHUB_ENV"
-          fi
-
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET }}
-          path: ${{ env.ASSET }}
+          name: ${{ env.ARTIFACT }}
+          path: ${{ env.ARTIFACT }}
 
   release:
     name: Release

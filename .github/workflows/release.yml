@@ -44,7 +44,7 @@ jobs:
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           OUT="dbscope-${VERSION}-${GOOS}-${GOARCH}${{ matrix.ext }}"
           go build -trimpath \
-            -ldflags "-s -w -X dbscope/cmd.Version=${VERSION} -X dbscope/cmd.Commit=${COMMIT} -X dbscope/cmd.Date=${DATE}" \
+            -ldflags "-s -w -X dbscope/version.Version=${VERSION} -X dbscope/version.Commit=${COMMIT} -X dbscope/version.Date=${DATE}" \
             -o "${OUT}" .
           echo "ARTIFACT=${OUT}" >> "$GITHUB_ENV"
 

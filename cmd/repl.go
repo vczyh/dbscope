@@ -89,7 +89,8 @@ var replCmd = &cobra.Command{
 				return fmt.Errorf("failed to get binlog event: %v", err)
 			}
 
-			current = dbmysql.HandleEvent(ev, current, replDecodeSQL, func(t *dbmysql.Transaction) {
+			parser := dbmysql.NewParser(&dbmysql.Config{DecodeSQL: replDecodeSQL})
+			current = parser.HandleEvent(ev, current, func(t *dbmysql.Transaction) {
 				seq++
 				if !headerPrinted {
 					printStreamHeader()

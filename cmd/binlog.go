@@ -12,60 +12,86 @@ import (
 	"time"
 
 	dbmysql "dbscope/mysql"
+	"dbscope/topn"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 )
 
-const (
-	execTimeMax    = "max"
-	execTimeOnly   = "exec"
-	execTimeIgnore = "ignore"
-)
+//const (
+//	execTimeMax    = "max"
+//	execTimeOnly   = "exec"
+//	execTimeIgnore = "ignore"
+//)
 
 const (
-	headerNo        = "no"
-	headerBinlog    = "binlog"
-	headerGTID      = "gtid"
-	headerStartTime = "st"
-	headerEndTime   = "et"
-	headerDuration  = "dur"
-	headerSize      = "size"
-	headerInsert    = "insert"
-	headerUpdate    = "update"
-	headerDelete    = "delete"
-	headerQuery     = "query"
-	headerSQL       = "sql"
+	headerNo         = "no"
+	headerBinlog     = "file"
+	headerGTID       = "gtid"
+	headerStartTime  = "st"
+	headerEndTime    = "et"
+	headerDuration   = "dur"
+	headerSize       = "size"
+	headerInsertRow  = "insertRow"
+	headerUpdateRow  = "updateRow"
+	headerDeleteRow  = "deleteRow"
+	headerInsertStmt = "insertStmt"
+	headerUpdateStmt = "updateStmt"
+	headerDeleteStmt = "deleteStmt"
+	headerSQL        = "sql"
+	headerFrom       = "from"
 )
 
 var (
-	topN             int
-	sortBy           string
-	streamMode       bool
-	decodeSQL        bool
-	verticalMode     bool
-	continueRest     bool
-	execTimeStrategy string
-	columns          []string
+	topN         int
+	sortBy       string
+	streamMode   bool
+	decodeSQL    bool
+	verticalMode bool
+	continueRest bool
+	//execTimeStrategy string
+
+	duration  time.Duration
+	size      uint64
+	startTime string
+	endTime   string
+
+	schemaHost     string
+	schemaPort     uint16
+	schemaUser     string
+	schemaPassword string
+
+	columns []string
 )
 
 func init() {
-	binlogCmd.Flags().IntVarP(&topN, "top", "n", 0, "Show only top N transactions (by sort field), 0 for all")
-	//binlogCmd.Flags().StringVarP(&sortBy, "sort", "s", "size", "Sort field: size, rows, time")
+	binlogCmd.Flags().IntVarP(&topN, "top", "n", 0, "Keep only the first/top N transactions (memory bounded), 0 for all")
+	binlogCmd.Flags().StringVarP(&sortBy, "sort", "s", "", "Ranking metric: size, duration, rows. Empty (default) preserves original order")
 	binlogCmd.Flags().BoolVar(&streamMode, "stream", false, "Stream mode: print each transaction as it is parsed, suitable for large files")
 	binlogCmd.Flags().BoolVar(&decodeSQL, "sql", false, "Decode row events into the corresponding SQL statements")
 	binlogCmd.Flags().BoolVarP(&verticalMode, "vertical", "G", false, "Display each row vertically (similar to MySQL's \\G)")
 	binlogCmd.Flags().BoolVar(&continueRest, "continue", false, "Also parse same-prefix binlog files in the last file's directory with larger numeric suffixes")
-	binlogCmd.Flags().StringVarP(&execTimeStrategy, "exec-time-strategy", "e", execTimeMax,
-		"How exec_time affects displayed duration: max (max of event duration and exec_time), exec (always exec_time), ignore (ignore exec_time)")
+
+	binlogCmd.Flags().DurationVar(&duration, "duration", 0, "Filter by duration of each transaction(such as 1s, 1m)")
+	binlogCmd.Flags().Uint64Var(&size, "size", 0, "Filter by size of eatch transaction(B)")
+	binlogCmd.Flags().StringVar(&startTime, "start-time", "", "Filter by start time of each transaction")
+	binlogCmd.Flags().StringVar(&endTime, "end-time", "", "Filter by stop time of each transaction")
+
+	binlogCmd.Flags().StringVarP(&schemaHost, "host", "H", "", "MySQL server host (used to fetch column names when binlog metadata is missing)")
+	binlogCmd.Flags().Uint16VarP(&schemaPort, "port", "P", 3306, "MySQL server port")
+	binlogCmd.Flags().StringVarP(&schemaUser, "user", "u", "root", "MySQL username")
+	binlogCmd.Flags().StringVarP(&schemaPassword, "password", "p", "", "MySQL password")
+
+	//binlogCmd.Flags().StringVarP(&execTimeStrategy, "exec-time-strategy", "e", execTimeMax,
+	//	"How exec_time affects displayed duration: max (max of event duration and exec_time), exec (always exec_time), ignore (ignore exec_time)")
 	binlogCmd.Flags().StringSliceVar(&columns, "col", []string{
 		headerNo,
 		headerGTID,
 		headerStartTime,
-		headerInsert,
-		headerUpdate,
-		headerDelete,
+		headerInsertRow,
+		headerUpdateRow,
+		headerDeleteRow,
 	},
 		"Specify the columns of the table",
 	)
@@ -78,10 +104,42 @@ var binlogCmd = &cobra.Command{
 	Long:  "Parse one or more MySQL binlog files and display detailed transaction information.",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		switch execTimeStrategy {
-		case execTimeMax, execTimeOnly, execTimeIgnore:
+		//switch execTimeStrategy {
+		//case execTimeMax, execTimeOnly, execTimeIgnore:
+		//default:
+		//	return fmt.Errorf("invalid --exec-time-strategy %q (expected max, exec, or duration)", execTimeStrategy)
+		//}
+
+		switch sortBy {
+		case "", "size", "duration", "rows":
 		default:
-			return fmt.Errorf("invalid --exec-time-strategy %q (expected max, exec, or duration)", execTimeStrategy)
+			return fmt.Errorf("invalid --sort %q (expected size, duration, or rows)", sortBy)
+		}
+
+		var st time.Time
+		var err error
+		if startTime != "" {
+			st, err = time.ParseInLocation("2006-01-02 15:04:05", startTime, time.Local)
+			if err != nil {
+				return err
+			}
+		}
+		var et time.Time
+		if endTime != "" {
+			et, err = time.ParseInLocation("2006-01-02 15:04:05", endTime, time.Local)
+			if err != nil {
+				return err
+			}
+		}
+
+		var schema dbmysql.Schema
+		if schemaHost != "" {
+			s, err := dbmysql.NewMySQLSchema(schemaHost, schemaPort, schemaUser, schemaPassword)
+			if err != nil {
+				return fmt.Errorf("connect to schema source: %w", err)
+			}
+			defer s.Close()
+			schema = s
 		}
 
 		if continueRest && len(args) > 0 {
@@ -93,20 +151,60 @@ var binlogCmd = &cobra.Command{
 		}
 
 		if streamMode {
-			if sortBy != "size" || topN != 0 {
+			if sortBy != "" || topN != 0 {
 				fmt.Fprintln(os.Stderr, "--sort and --top are ignored in stream mode")
 			}
-			return runStream(args)
+			return runStream(args, schema)
 		}
+
+		parser := dbmysql.NewParser(&dbmysql.Config{
+			DecodeSQL: true,
+			Duration:  duration,
+			Size:      size,
+			StartTime: st,
+			EndTime:   et,
+			Schema:    schema,
+		})
 
 		var allTxns []*dbmysql.Transaction
 
-		for _, file := range args {
-			txns, err := dbmysql.ParseBinlog(file, decodeSQL)
-			if err != nil {
-				return fmt.Errorf("failed to parse %s: %w", file, err)
+		switch {
+		case topN > 0 && sortBy != "":
+			less := transactionLess(sortBy)
+			tracker := topn.New(topN, less)
+			for _, file := range args {
+				if err := parser.ParseBinlogStream(file, tracker.Add); err != nil {
+					return fmt.Errorf("failed to parse %s: %w", file, err)
+				}
 			}
-			allTxns = append(allTxns, txns...)
+			allTxns = tracker.Drain()
+
+		case topN > 0:
+			collected := make([]*dbmysql.Transaction, 0, topN)
+			onTxn := func(t *dbmysql.Transaction) {
+				if len(collected) < topN {
+					collected = append(collected, t)
+				}
+			}
+			for _, file := range args {
+				if err := parser.ParseBinlogStream(file, onTxn); err != nil {
+					return fmt.Errorf("failed to parse %s: %w", file, err)
+				}
+			}
+			allTxns = collected
+
+		default:
+			for _, file := range args {
+				txns, err := parser.ParseBinlog(file)
+				if err != nil {
+					return fmt.Errorf("failed to parse %s: %w", file, err)
+				}
+				allTxns = append(allTxns, txns...)
+			}
+			if sortBy != "" {
+				less := transactionLess(sortBy)
+				sort.Slice(allTxns, func(i, j int) bool { return less(allTxns[j], allTxns[i]) })
+			}
 		}
 
 		if len(allTxns) == 0 {
@@ -114,18 +212,12 @@ var binlogCmd = &cobra.Command{
 			return nil
 		}
 
-		//dbmysql.SortTransactions(allTxns, sortBy)
-
-		if topN > 0 && topN < len(allTxns) {
-			allTxns = allTxns[:topN]
-		}
-
 		printTransactions(allTxns)
 		return nil
 	},
 }
 
-func runStream(files []string) error {
+func runStream(files []string, schema dbmysql.Schema) error {
 	seq := 0
 	headerPrinted := false
 
@@ -138,8 +230,9 @@ func runStream(files []string) error {
 		printStreamRow(seq, t)
 	}
 
+	parser := dbmysql.NewParser(&dbmysql.Config{DecodeSQL: true, Schema: schema})
 	for _, file := range files {
-		if err := dbmysql.ParseBinlogStream(file, decodeSQL, onTxn); err != nil {
+		if err := parser.ParseBinlogStream(file, onTxn); err != nil {
 			return fmt.Errorf("failed to parse %s: %w", file, err)
 		}
 	}
@@ -185,7 +278,7 @@ func printStreamRow(seq int, t *dbmysql.Transaction) {
 	fmt.Fprintf(os.Stdout, "%-6d  %-40s  %-19s  %10s  %6d  %6d  %6d  %s\n",
 		seq,
 		t.GTID,
-		t.StartTime.Format("2006-01-02 15:04:05"),
+		t.StartTime().Format("2006-01-02 15:04:05"),
 		//formatSize(t.Size),
 		strconv.Itoa(int(t.Size)),
 		t.Inserts,
@@ -235,48 +328,68 @@ func printTransactions(txns []*dbmysql.Transaction) {
 
 	// Detail table
 	headerColumns := map[string]render.Column{
-		headerNo:        {Key: headerNo, Header: "#", Align: text.AlignRight},
-		headerBinlog:    {Key: headerBinlog, Header: "BinlogFile"},
-		headerGTID:      {Key: headerGTID, Header: "GTID", WidthMin: 38},
-		headerStartTime: {Key: headerStartTime, Header: "StartTime", WidthMin: 19},
-		headerEndTime:   {Key: headerEndTime, Header: "EndTime", WidthMin: 19},
-		headerDuration:  {Key: headerDuration, Header: "Duration", Align: text.AlignRight},
-		headerSize:      {Key: headerSize, Header: "Size", Align: text.AlignRight},
-		headerInsert:    {Key: headerInsert, Header: "Insert", Align: text.AlignRight},
-		headerUpdate:    {Key: headerUpdate, Header: "Update", Align: text.AlignRight},
-		headerDelete:    {Key: headerDelete, Header: "Delete", Align: text.AlignRight},
-		headerQuery:     {Key: headerQuery, Header: "Query", WidthMax: 20},
-		headerSQL:       {Key: headerSQL, Header: "SQL", WidthMax: 10},
+		headerNo:         {Key: headerNo, Header: "#", Align: text.AlignRight},
+		headerBinlog:     {Key: headerBinlog, Header: "File"},
+		headerGTID:       {Key: headerGTID, Header: "GTID", WidthMin: 38},
+		headerStartTime:  {Key: headerStartTime, Header: "StartTime", WidthMin: 19},
+		headerEndTime:    {Key: headerEndTime, Header: "EndTime", WidthMin: 19},
+		headerDuration:   {Key: headerDuration, Header: "Duration", Align: text.AlignRight},
+		headerSize:       {Key: headerSize, Header: "Size", Align: text.AlignRight},
+		headerInsertRow:  {Key: headerInsertRow, Header: "InsertRow", Align: text.AlignRight},
+		headerUpdateRow:  {Key: headerUpdateRow, Header: "UpdateRow", Align: text.AlignRight},
+		headerDeleteRow:  {Key: headerDeleteRow, Header: "DeleteRow", Align: text.AlignRight},
+		headerInsertStmt: {Key: headerInsertStmt, Header: "InsertStmt", Align: text.AlignRight},
+		headerUpdateStmt: {Key: headerUpdateStmt, Header: "UpdateStmt", Align: text.AlignRight},
+		headerDeleteStmt: {Key: headerDeleteStmt, Header: "DeleteStmt", Align: text.AlignRight},
+		headerSQL:        {Key: headerSQL, Header: "SQL", WidthMax: 10},
+		headerFrom:       {Key: headerFrom, Header: "From", Align: text.AlignRight},
 	}
 	dt := render.NewTable[*dbmysql.Transaction](func(rowIdx int, col string, row *dbmysql.Transaction) any {
 		switch col {
 		case headerNo:
 			return rowIdx + 1
 		case headerBinlog:
-			return row.BinlogFile
+			return filepath.Base(row.BinlogFile)
 		case headerGTID:
 			return row.GTID
 		case headerStartTime:
-			return row.StartTime.Format("2006-01-02 15:04:05")
+			return row.StartTime().Format("2006-01-02 15:04:05")
 		case headerEndTime:
-			if row.EndTime.IsZero() {
+			if row.EndTime().IsZero() {
 				return ""
 			}
-			return row.EndTime.Format("2006-01-02 15:04:05")
+			return row.EndTime().Format("2006-01-02 15:04:05")
 		case headerDuration:
-			return computeDuration(row, execTimeStrategy)
+			return row.Duration()
+			//return computeDuration(row, execTimeStrategy)
 		case headerSize:
 			return row.Size
-		case headerInsert:
+		case headerInsertRow:
 			return row.Inserts
-		case headerUpdate:
+		case headerUpdateRow:
 			return row.Updates
-		case headerDelete:
+		case headerDeleteRow:
 			return row.Deletes
-		case headerQuery:
-			return row.Query
+		case headerInsertStmt:
+			return row.InsertStmts
+		case headerUpdateStmt:
+			return row.UpdateStmts
+		case headerDeleteStmt:
+			return row.DeleteStmts
+		//case headerQuery:
+		//	return row.Query
 		case headerSQL:
 			return strings.Join(row.SQLs, "\n")
+		case headerFrom:
+			v := "S"
+			repl, err := row.IsReplica()
+			if err != nil {
+				v = "unknown"
+			}
+			if repl {
+				v = "R"
+			}
+			return v
 		default:
 			return "[unknown]"
 		}
@@ -294,12 +407,14 @@ func printTransactions(txns []*dbmysql.Transaction) {
 
 func computeDuration(t *dbmysql.Transaction, strategy string) time.Duration {
 	natural := t.Duration()
-	exec := time.Duration(t.QueryExecSeconds) * time.Second
+	// todo
+	//exec := time.Duration(t.QueryExecSeconds) * time.Second
+	exec := time.Duration(0) * time.Second
 	switch strategy {
-	case execTimeOnly:
-		return exec
-	case execTimeIgnore:
-		return natural
+	//case execTimeOnly:
+	//	return exec
+	//case execTimeIgnore:
+	//	return natural
 	default: // execTimeMax
 		if exec > natural {
 			return exec
@@ -354,4 +469,15 @@ func findFollowingBinlogs(base string) ([]string, error) {
 		paths[i] = m.path
 	}
 	return paths, nil
+}
+
+func transactionLess(by string) func(a, b *dbmysql.Transaction) bool {
+	switch by {
+	case "duration":
+		return func(a, b *dbmysql.Transaction) bool { return a.Duration() < b.Duration() }
+	case "rows":
+		return func(a, b *dbmysql.Transaction) bool { return a.TotalRows() < b.TotalRows() }
+	default: // "size"
+		return func(a, b *dbmysql.Transaction) bool { return a.Size < b.Size }
+	}
 }

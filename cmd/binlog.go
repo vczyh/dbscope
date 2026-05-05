@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"dbscope/render"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +10,10 @@ import (
 	"strings"
 	"time"
 
-	dbmysql "dbscope/mysql"
-	"dbscope/topn"
+	"github.com/vczyh/dbscope/render"
+
+	dbmysql "github.com/vczyh/dbscope/mysql"
+	"github.com/vczyh/dbscope/topn"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"

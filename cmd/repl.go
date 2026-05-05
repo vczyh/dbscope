@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	dbmysql "dbscope/mysql"
+	dbmysql "github.com/vczyh/dbscope/mysql"
 
 	gomysql "github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/spf13/cobra"

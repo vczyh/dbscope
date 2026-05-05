@@ -1,4 +1,4 @@
-module dbscope
+module github.com/vczyh/dbscope
 
 go 1.26.0
 

@@ -1,9 +1,10 @@
 package cmd
 
 import (
-	"dbscope/version"
 	"fmt"
 	"runtime"
+
+	"github.com/vczyh/dbscope/version"
 
 	"github.com/spf13/cobra"
 )

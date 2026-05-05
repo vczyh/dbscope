@@ -1,6 +1,6 @@
 package main
 
-import "dbscope/cmd"
+import "github.com/vczyh/dbscope/cmd"
 
 func main() {
 	cmd.Execute()
